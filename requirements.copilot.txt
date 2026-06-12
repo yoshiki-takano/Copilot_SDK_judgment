@@ -1,0 +1,6 @@
+github-copilot-sdk>=0.3.0
+pandas>=3.0.0
+openpyxl>=3.1.5
+tqdm>=4.67.3
+chardet>=5.2.0
+streamlit>=1.37.0
