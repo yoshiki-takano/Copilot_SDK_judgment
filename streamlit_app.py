@@ -71,7 +71,12 @@ def norm(path_text: str) -> str:
 def is_streamlit_cloud() -> bool:
     cloud_flag = str(os.getenv("STREAMLIT_SHARING_MODE", "")).strip().lower()
     runtime = str(os.getenv("STREAMLIT_RUNTIME", "")).strip().lower()
-    return cloud_flag in {"1", "true", "yes"} or runtime == "cloud"
+    cwd_text = norm(str(Path.cwd()))
+    return (
+        cloud_flag in {"1", "true", "yes"}
+        or runtime == "cloud"
+        or cwd_text.startswith("/mount/src")
+    )
 
 
 def detect_default_python(workspace: Path) -> str:

@@ -1,4 +1,4 @@
-github-copilot-sdk>=0.3.0
+github-copilot-sdk>=1.0.1
 pandas>=3.0.0
 openpyxl>=3.1.5
 tqdm>=4.67.3

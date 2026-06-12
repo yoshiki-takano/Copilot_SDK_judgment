@@ -334,18 +334,22 @@ async def generate_content_with_retry(args: argparse.Namespace) -> int:
     if args.cli_url:
         client_options["cli_url"] = args.cli_url
 
+    client_config = None
     if args.cli_url and ExternalServerConfig is not None:
         client_config = ExternalServerConfig(url=args.cli_url)
-    elif SubprocessConfig is not None:
+    elif cli_path and SubprocessConfig is not None:
         client_config = SubprocessConfig(
-            cli_path=client_options.get("cli_path"),
+            cli_path=cli_path,
             github_token=client_options.get("github_token"),
             use_logged_in_user=client_options.get("use_logged_in_user"),
         )
-    else:
-        client_config = client_options if client_options else None
 
-    client = CopilotClient(client_config) if client_config is not None else CopilotClient()
+    if client_config is not None:
+        client = CopilotClient(client_config)
+    elif client_options:
+        client = CopilotClient(**client_options)
+    else:
+        client = CopilotClient()
     try:
         await client.start()
     except RuntimeError as exc:

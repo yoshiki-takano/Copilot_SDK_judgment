@@ -40,3 +40,4 @@ htmlcov/
 .DS_Store
 Thumbs.db
 .streamlit_runtime/inputs/github_copilot_token_from_secrets.txt
+.streamlit/token_20260712.txt
