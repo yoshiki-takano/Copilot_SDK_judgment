@@ -81,8 +81,8 @@ def is_streamlit_cloud() -> bool:
 
 def detect_default_python(workspace: Path) -> str:
     if is_streamlit_cloud():
-        # In Streamlit Cloud, `python` resolves to the managed app venv.
-        return "python"
+        # On Streamlit Cloud, force the current interpreter used by the app process.
+        return norm(str(Path(sys.executable)))
 
     current = Path(sys.executable)
     if current.exists():
@@ -133,6 +133,13 @@ def save_uploaded_file(workspace: Path, uploaded_file, target_name: str | None =
     data = uploaded_file.getvalue()
     save_path.write_bytes(data)
     return save_path
+
+
+def resolve_python_command(py_cmd: str) -> str:
+    if is_streamlit_cloud():
+        return norm(str(Path(sys.executable)))
+    value = py_cmd.strip()
+    return value or "python"
 
 
 def save_token_from_secrets(workspace: Path) -> str:
@@ -229,8 +236,9 @@ except Exception as exc:
 print(json.dumps(result_data, ensure_ascii=False))
 '''
     try:
+        resolved_py = resolve_python_command(py_cmd)
         result = subprocess.run(
-            [py_cmd, "-c", script],
+            [resolved_py, "-c", script],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -313,8 +321,9 @@ async def main():
 asyncio.run(main())
 '''
 
+    resolved_py = resolve_python_command(py_cmd)
     result = subprocess.run(
-        [py_cmd, "-c", script, token_path],
+        [resolved_py, "-c", script, token_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -865,7 +874,7 @@ def get_config_from_ui() -> RunConfig:
     workspace = Path(st.session_state.workspace).expanduser().resolve()
     base_excel_text = st.session_state.get("_uploaded_base_excel_path", "").strip()
     base_excel = Path(base_excel_text).expanduser() if base_excel_text else Path()
-    python_exe = st.session_state.python_exe.strip() or "python"
+    python_exe = resolve_python_command(st.session_state.python_exe)
     prompt1 = st.session_state.get("_uploaded_prompt1_path", "").strip()
     prompt2 = st.session_state.get("_uploaded_prompt2_path", "").strip()
     columns = detect_input_columns_from_prompts(st.session_state.mode, prompt1, prompt2)
@@ -941,7 +950,7 @@ def init_state() -> None:
     # Streamlit Cloud can retain older session_state values across reruns.
     # Force command-style python so subprocess checks run in the app venv.
     if st.session_state.get("_is_cloud", False):
-        st.session_state["python_exe"] = "python"
+        st.session_state["python_exe"] = resolve_python_command(st.session_state.get("python_exe", "python"))
 
     # In Streamlit Cloud, prefer token from st.secrets when available.
     if not st.session_state.get("_uploaded_token_path"):
