@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -36,6 +37,12 @@ MODEL_CANDIDATES = [
 
 SUPPORTED_EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 
+STREAMLIT_SECRET_TOKEN_KEYS = (
+    "GITHUB_COPILOT_TOKEN",
+    "COPILOT_GITHUB_TOKEN",
+    "GITHUB_TOKEN",
+)
+
 @dataclass
 class RunConfig:
     workspace: Path
@@ -61,10 +68,22 @@ def norm(path_text: str) -> str:
     return path_text.replace("\\", "/")
 
 
+def is_streamlit_cloud() -> bool:
+    cloud_flag = str(os.getenv("STREAMLIT_SHARING_MODE", "")).strip().lower()
+    runtime = str(os.getenv("STREAMLIT_RUNTIME", "")).strip().lower()
+    return cloud_flag in {"1", "true", "yes"} or runtime == "cloud"
+
+
 def detect_default_python(workspace: Path) -> str:
+    current = Path(sys.executable)
+    if current.exists():
+        return norm(str(current.resolve()))
+
     candidates = [
         workspace / ".venv" / "Scripts" / "python.exe",
         workspace / "venv" / "Scripts" / "python.exe",
+        workspace / ".venv" / "bin" / "python",
+        workspace / "venv" / "bin" / "python",
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -107,10 +126,34 @@ def save_uploaded_file(workspace: Path, uploaded_file, target_name: str | None =
     return save_path
 
 
+def save_token_from_secrets(workspace: Path) -> str:
+    for key in STREAMLIT_SECRET_TOKEN_KEYS:
+        token = str(st.secrets.get(key, "")).strip()
+        if not token:
+            continue
+        out_dir = runtime_inputs_dir(workspace)
+        save_path = out_dir / "github_copilot_token_from_secrets.txt"
+        save_path.write_text(token + "\n", encoding="utf-8")
+        return norm(str(save_path))
+    return ""
+
+
+def resolve_token_file(workspace: Path) -> str:
+    uploaded = st.session_state.get("_uploaded_token_path", "").strip()
+    if uploaded and Path(uploaded).exists():
+        return uploaded
+    secret_token_path = save_token_from_secrets(workspace)
+    if secret_token_path:
+        st.session_state["_uploaded_token_path"] = secret_token_path
+        return secret_token_path
+    return ""
+
+
 def fetch_copilot_status(py_cmd: str) -> dict[str, Any]:
     """Check SDK, CLI, and authentication status in one call."""
     script = r'''
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -142,11 +185,12 @@ def find_copilot_cli_path():
         found = shutil.which(name)
         if found:
             return found
-    winget_root = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
-    if winget_root.exists():
-        for candidate in winget_root.glob("GitHub.Copilot*/*copilot.exe"):
-            if candidate.is_file():
-                return str(candidate)
+    if os.name == "nt":
+        winget_root = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
+        if winget_root.exists():
+            for candidate in winget_root.glob("GitHub.Copilot*/*copilot.exe"):
+                if candidate.is_file():
+                    return str(candidate)
     return None
 
 try:
@@ -195,6 +239,7 @@ def fetch_copilot_models(py_cmd: str, token_path: str) -> list[str]:
     script = r'''
 import asyncio
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -208,11 +253,12 @@ def find_copilot_cli_path():
         if found:
             return found
 
-    winget_root = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
-    if winget_root.exists():
-        for candidate in winget_root.glob("GitHub.Copilot*/*copilot.exe"):
-            if candidate.is_file():
-                return str(candidate)
+    if os.name == "nt":
+        winget_root = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
+        if winget_root.exists():
+            for candidate in winget_root.glob("GitHub.Copilot*/*copilot.exe"):
+                if candidate.is_file():
+                    return str(candidate)
     return None
 
 
@@ -828,6 +874,8 @@ def get_config_from_ui() -> RunConfig:
         except Exception:
             pass
 
+    token_file = resolve_token_file(workspace)
+
     return RunConfig(
         workspace=workspace,
         mode=st.session_state.mode,
@@ -839,7 +887,7 @@ def get_config_from_ui() -> RunConfig:
         input_columns=columns,
         prompt1=prompt1,
         prompt2=prompt2,
-        token_file=st.session_state.get("_uploaded_token_path", "").strip(),
+        token_file=token_file,
         output_root=output_root,
         parts_dir=parts_dir,
         metadata_path=metadata_path,
@@ -873,10 +921,17 @@ def init_state() -> None:
         "split_info": "未実行",
         "_last_split_parts": [],
         "last_logs": {},
+        "_is_cloud": is_streamlit_cloud(),
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+    # In Streamlit Cloud, prefer token from st.secrets when available.
+    if not st.session_state.get("_uploaded_token_path"):
+        token_path = save_token_from_secrets(ws)
+        if token_path:
+            st.session_state["_uploaded_token_path"] = token_path
 
     # Migrate legacy keys if user session has old names.
     if "model_stage1" in st.session_state and "model_screening" not in st.session_state:
@@ -888,9 +943,18 @@ def init_state() -> None:
 def main() -> None:
     st.set_page_config(page_title="Copilot SDK Runner", layout="wide")
     init_state()
+    is_cloud = bool(st.session_state.get("_is_cloud", False))
 
     st.title("Copilot SDK Streamlit Runner")
-    st.caption("ローカル環境でCopilot SDK/CLIを実行します")
+    if is_cloud:
+        st.caption("Streamlit Cloud モード: ヘッドレス実行 + Secrets ベースの認証を推奨します")
+        st.info(
+            "Cloud運用メモ: Copilot CLI は未導入でも実行可能です。"
+            " Settings -> Secrets に GITHUB_COPILOT_TOKEN を設定し、"
+            "Token file未アップロードでもモデル再取得/実行できるようにしています。"
+        )
+    else:
+        st.caption("ローカル環境でCopilot SDK/CLIを実行します")
 
     tab_wsp, tab_cfg = st.tabs(["Workspace", "Execute"])
 #    tab_wsp, tab_cfg, tab_exec = st.tabs(["Workspace", "Input files setting", "Execute"])
@@ -926,7 +990,7 @@ def main() -> None:
             )
         with out_btn_col:
             st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
-            if st.button("参照", key="_pick_output_root"):
+            if st.button("参照", key="_pick_output_root", disabled=is_cloud or tk is None or filedialog is None):
                 try:
                     selected = pick_directory_dialog(st.session_state.get("_output_root", norm(str(ws_dir / "out"))))
                     if selected:
@@ -934,6 +998,8 @@ def main() -> None:
                         st.rerun()
                 except Exception as exc:
                     st.warning(f"フォルダ選択ダイアログを開けませんでした: {exc}")
+        if is_cloud:
+            st.caption("Cloudではフォルダ参照ダイアログを利用できないため、パスを直接入力してください")
 
         output_root_preview = st.session_state.get("_output_root", norm(str(ws_dir / "out")))
         st.caption(f"Metadata: {norm(str(Path(output_root_preview) / '.vscode' / 'copilot_run_metadata.json'))}")
@@ -944,8 +1010,14 @@ def main() -> None:
         if uploaded_token is not None:
             saved = save_uploaded_file(ws_dir, uploaded_token, "github_copilot_token.txt")
             st.session_state["_uploaded_token_path"] = norm(str(saved))
-        if not st.session_state.get("_uploaded_token_path"):
-            st.caption("Token file未設定時は、ログイン済みCopilotで実行します (Copilot CLIでログインできることを確認してください)")
+        token_path = resolve_token_file(ws_dir)
+        if token_path:
+            if "from_secrets" in token_path:
+                st.success("Copilot token: Streamlit Secrets から読み込み済み")
+            else:
+                st.caption(f"Token file: {token_path}")
+        else:
+            st.caption("Token未設定時は CLI ログインユーザーを利用します（Cloudでは非推奨）")
 
         st.markdown("**Copilot SDK・CLI状態確認**")
         if st.button("統合状態を確認"):
@@ -969,7 +1041,10 @@ def main() -> None:
             # CLI status
             cli_info = status.get("cli", {})
             if cli_info.get("error"):
-                st.error(f"CLI: {cli_info['error']}")
+                if is_cloud:
+                    st.warning(f"CLI: {cli_info['error']}（Cloud では token 認証で継続可能です）")
+                else:
+                    st.error(f"CLI: {cli_info['error']}")
             else:
                 cli_path = cli_info.get("path", "unknown")
                 cli_version = cli_info.get("version", "取得できません")
@@ -1071,7 +1146,7 @@ def main() -> None:
             st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
             if st.button("モデル再取得"):
                 try:
-                    token_path = st.session_state.get("_uploaded_token_path", "").strip()
+                    token_path = resolve_token_file(ws_dir)
                     fetched = fetch_copilot_models(st.session_state.python_exe.strip() or "python", token_path)
                     if fetched:
                         st.session_state["_model_options"] = fetched

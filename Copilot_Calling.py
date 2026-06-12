@@ -181,12 +181,13 @@ def find_copilot_cli_path(explicit_path: str | None = None) -> str | None:
         if found:
             return found
 
-    local_appdata = Path.home() / "AppData" / "Local"
-    winget_root = local_appdata / "Microsoft" / "WinGet" / "Packages"
-    if winget_root.exists():
-        for candidate in winget_root.glob("GitHub.Copilot*/*copilot.exe"):
-            if candidate.is_file():
-                return str(candidate)
+    if os.name == "nt":
+        local_appdata = Path.home() / "AppData" / "Local"
+        winget_root = local_appdata / "Microsoft" / "WinGet" / "Packages"
+        if winget_root.exists():
+            for candidate in winget_root.glob("GitHub.Copilot*/*copilot.exe"):
+                if candidate.is_file():
+                    return str(candidate)
 
     return None
 
@@ -344,7 +345,7 @@ async def generate_content_with_retry(args: argparse.Namespace) -> int:
     else:
         client_config = client_options if client_options else None
 
-    client = CopilotClient()
+    client = CopilotClient(client_config) if client_config is not None else CopilotClient()
     try:
         await client.start()
     except RuntimeError as exc:

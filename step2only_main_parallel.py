@@ -16,8 +16,14 @@ import tempfile
 from datetime import datetime
 from openpyxl import load_workbook, Workbook
 import glob
-import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, simpledialog
+except Exception:
+    tk = None
+    filedialog = None
+    messagebox = None
+    simpledialog = None
 from tqdm import tqdm
 import os
 import json
@@ -112,6 +118,9 @@ def parse_json_input(inp: str) -> JSONType:
 # UI使用可否と通知ヘルパ
 # -------------------------
 use_ui = not args.no_ui
+if use_ui and (tk is None or filedialog is None or messagebox is None or simpledialog is None):
+    print("[WARN] tkinter が利用できないため --no-ui モードで実行します", file=sys.stderr)
+    use_ui = False
 
 def notify_info(title, msg):
     if use_ui:
