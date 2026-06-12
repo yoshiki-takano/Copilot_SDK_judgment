@@ -1380,17 +1380,30 @@ def main() -> None:
                                 if not outdir_path.exists():
                                     st.warning(f"出力ディレクトリが見つかりません: {outdir_path}")
                                 else:
-                                    # 大文字小文字の両方を試す
+                                    # MERGED ファイルを探す
                                     merged_files = list(outdir_path.glob("*MERGED.xlsx")) + list(outdir_path.glob("*merged.xlsx"))
                                     
                                     if not merged_files:
-                                        # デバッグ: 出力ディレクトリ内のファイルをリスト
-                                        all_files = list(outdir_path.glob("*.xlsx"))
-                                        st.warning(f"MERGED ファイルが見つかりません（出力ディレクトリ: {outdir_path}）")
-                                        if all_files:
-                                            st.info(f"利用可能なファイル: {[f.name for f in all_files]}")
+                                        # すべての xlsx ファイルをリストしてデバッグ
+                                        all_files = sorted(list(outdir_path.glob("*.xlsx")), key=lambda p: p.stat().st_mtime, reverse=True)
+                                        
+                                        if not all_files:
+                                            st.warning(f"出力ディレクトリにファイルがありません: {outdir_path}")
+                                        else:
+                                            st.info(f"出力ディレクトリ内のファイル: {[f.name for f in all_files[:20]]}")
+                                            # 最新ファイルをダウンロード対象にする（Part ファイルではなく最後に生成されたもの）
+                                            newest_file = all_files[0]
+                                            st.write(f"最新ファイル: {newest_file.name}")
+                                            with open(newest_file, "rb") as f:
+                                                file_data = f.read()
+                                            st.download_button(
+                                                label=f"📥 {newest_file.name} をダウンロード",
+                                                data=file_data,
+                                                file_name=newest_file.name,
+                                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                            )
                                     else:
-                                        # 最新のファイルを使用
+                                        # MERGED ファイルが見つかった
                                         merged_file = sorted(merged_files, key=lambda p: p.stat().st_mtime)[-1]
                                         with open(merged_file, "rb") as f:
                                             file_data = f.read()
