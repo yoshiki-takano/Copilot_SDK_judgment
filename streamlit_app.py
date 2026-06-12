@@ -938,6 +938,11 @@ def init_state() -> None:
         if key not in st.session_state:
             st.session_state[key] = value
 
+    # Streamlit Cloud can retain older session_state values across reruns.
+    # Force command-style python so subprocess checks run in the app venv.
+    if st.session_state.get("_is_cloud", False):
+        st.session_state["python_exe"] = "python"
+
     # In Streamlit Cloud, prefer token from st.secrets when available.
     if not st.session_state.get("_uploaded_token_path"):
         token_path = save_token_from_secrets(ws)
