@@ -42,6 +42,8 @@ except Exception:
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_MODEL = "gpt-5"
 MIN_SUPPORTED_SDK_PROTOCOL = 3
+TOKEN_KEYS = {"GITHUB_COPILOT_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN"}
+_TOKEN_KEY_PATTERN = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(.+)$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,11 +96,51 @@ def read_auth_token(path: Path) -> str:
     if path.is_dir():
         return ""
     try:
-        return path.read_text(encoding="utf-8").strip()
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        token = extract_token_value(raw)
+        return token
     except FileNotFoundError:
         return ""
     except Exception:
         return ""
+
+
+def extract_token_value(raw_text: str) -> str:
+    if not raw_text:
+        return ""
+    text = raw_text.replace("\ufeff", "").strip()
+    if not text:
+        return ""
+
+    fallback = ""
+    for raw_line in text.replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        m = _TOKEN_KEY_PATTERN.match(line)
+        if m:
+            key = m.group(1).strip().upper()
+            value = m.group(2).strip()
+            if " #" in value:
+                value = value.split(" #", 1)[0].rstrip()
+            if value and value[0] in {'"', "'"} and value[-1:] == value[0]:
+                value = value[1:-1].strip()
+            if value.lower().startswith("bearer "):
+                value = value[7:].strip()
+            if key in TOKEN_KEYS and value:
+                return value
+            if value and not fallback:
+                fallback = value
+            continue
+
+        candidate = line
+        if candidate.lower().startswith("bearer "):
+            candidate = candidate[7:].strip()
+        if candidate and not fallback:
+            fallback = candidate
+
+    return fallback.strip()
 
 
 def detect_and_read_file(file_path: Path) -> str:

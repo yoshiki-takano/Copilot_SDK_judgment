@@ -43,6 +43,48 @@ STREAMLIT_SECRET_TOKEN_KEYS = (
     "GITHUB_TOKEN",
 )
 
+_TOKEN_KEY_PATTERN = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(.+)$")
+
+
+def extract_token_value(raw_text: str) -> str:
+    """Extract a usable token from plain text or KEY=VALUE style input."""
+    if not raw_text:
+        return ""
+
+    text = raw_text.replace("\ufeff", "").strip()
+    if not text:
+        return ""
+
+    fallback = ""
+    for raw_line in text.replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        m = _TOKEN_KEY_PATTERN.match(line)
+        if m:
+            key = m.group(1).strip().upper()
+            value = m.group(2).strip()
+            if " #" in value:
+                value = value.split(" #", 1)[0].rstrip()
+            if value and value[0] in {'"', "'"} and value[-1:] == value[0]:
+                value = value[1:-1].strip()
+            if value.lower().startswith("bearer "):
+                value = value[7:].strip()
+            if key in STREAMLIT_SECRET_TOKEN_KEYS and value:
+                return value
+            if value and not fallback:
+                fallback = value
+            continue
+
+        candidate = line
+        if candidate.lower().startswith("bearer "):
+            candidate = candidate[7:].strip()
+        if candidate and not fallback:
+            fallback = candidate
+
+    return fallback.strip()
+
 @dataclass
 class RunConfig:
     workspace: Path
@@ -144,7 +186,7 @@ def resolve_python_command(py_cmd: str) -> str:
 
 def save_token_from_secrets(workspace: Path) -> str:
     for key in STREAMLIT_SECRET_TOKEN_KEYS:
-        token = str(st.secrets.get(key, "")).strip()
+        token = extract_token_value(str(st.secrets.get(key, "")))
         if not token:
             continue
         out_dir = runtime_inputs_dir(workspace)
@@ -264,6 +306,55 @@ from pathlib import Path
 from copilot import CopilotClient
 
 
+TOKEN_KEYS = {"GITHUB_COPILOT_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN"}
+
+
+def extract_token_value(raw_text: str) -> str:
+    if not raw_text:
+        return ""
+    text = raw_text.replace("\ufeff", "").strip()
+    if not text:
+        return ""
+
+    fallback = ""
+    for raw_line in text.replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        parsed = None
+        for sep in ("=", ":"):
+            if sep in line:
+                left, right = line.split(sep, 1)
+                parsed = (left.strip(), right.strip())
+                break
+
+        if parsed is not None and parsed[0]:
+            key = parsed[0]
+            if key.lower().startswith("export "):
+                key = key[7:].strip()
+            value = parsed[1]
+            if " #" in value:
+                value = value.split(" #", 1)[0].rstrip()
+            if value and value[0] in {'"', "'"} and value[-1:] == value[0]:
+                value = value[1:-1].strip()
+            if value.lower().startswith("bearer "):
+                value = value[7:].strip()
+            if key.upper() in TOKEN_KEYS and value:
+                return value
+            if value and not fallback:
+                fallback = value
+            continue
+
+        candidate = line
+        if candidate.lower().startswith("bearer "):
+            candidate = candidate[7:].strip()
+        if candidate and not fallback:
+            fallback = candidate
+
+    return fallback.strip()
+
+
 def find_copilot_cli_path():
     for name in ("copilot", "copilot.exe"):
         found = shutil.which(name)
@@ -287,7 +378,7 @@ async def main():
         if token_path:
             p = Path(token_path)
             if p.exists():
-                token = p.read_text(encoding="utf-8").strip()
+                token = extract_token_value(p.read_text(encoding="utf-8", errors="replace"))
 
         try:
             from copilot import SubprocessConfig  # type: ignore
