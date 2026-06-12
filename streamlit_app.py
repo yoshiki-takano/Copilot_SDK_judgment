@@ -1066,8 +1066,7 @@ def main() -> None:
         st.caption("Streamlit Cloud モード: ヘッドレス実行 + Secrets ベースの認証を推奨します")
         st.info(
             "Cloud運用メモ: Copilot CLI は未導入でも実行可能です。"
-            " Settings -> Secrets に GITHUB_COPILOT_TOKEN を設定し、"
-            "Token file未アップロードでもモデル再取得/実行できるようにしています。"
+            "Token file をアップロードしてください。"
         )
     else:
         st.caption("ローカル環境でCopilot SDK/CLIを実行します")
