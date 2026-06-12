@@ -1307,6 +1307,20 @@ def main() -> None:
                             st.session_state.last_logs = {f"part{selected_part}": result}
                             if result["returncode"] == 0:
                                 st.success(f"part{selected_part} 成功")
+                                
+                                # Part ファイルをダウンロード可能にする
+                                outdir_path = Path(cfg.outdir)
+                                part_files = list(outdir_path.glob(f"*_Part{selected_part}.xlsx"))
+                                if part_files:
+                                    part_file = sorted(part_files, key=lambda p: p.stat().st_mtime)[-1]
+                                    with open(part_file, "rb") as f:
+                                        file_data = f.read()
+                                    st.download_button(
+                                        label=f"📥 {part_file.name} をダウンロード",
+                                        data=file_data,
+                                        file_name=part_file.name,
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    )
                             else:
                                 st.error(f"part{selected_part} 失敗")
                     else:
@@ -1360,6 +1374,21 @@ def main() -> None:
                             results["merge"] = merge_result
                             if merge_result["returncode"] == 0:
                                 st.success("全part成功 + merge成功")
+                                
+                                # MERGED ファイルをダウンロード可能にする
+                                outdir_path = Path(cfg.outdir)
+                                merged_files = list(outdir_path.glob("*MERGED.xlsx"))
+                                if merged_files:
+                                    # 最新のファイルを使用
+                                    merged_file = sorted(merged_files, key=lambda p: p.stat().st_mtime)[-1]
+                                    with open(merged_file, "rb") as f:
+                                        file_data = f.read()
+                                    st.download_button(
+                                        label=f"📥 {merged_file.name} をダウンロード",
+                                        data=file_data,
+                                        file_name=merged_file.name,
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    )
                             else:
                                 st.error("全part成功 / merge失敗")
 
