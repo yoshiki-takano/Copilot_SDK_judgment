@@ -80,6 +80,10 @@ def is_streamlit_cloud() -> bool:
 
 
 def detect_default_python(workspace: Path) -> str:
+    if is_streamlit_cloud():
+        # In Streamlit Cloud, `python` resolves to the managed app venv.
+        return "python"
+
     current = Path(sys.executable)
     if current.exists():
         return norm(str(current.resolve()))
@@ -827,8 +831,10 @@ def validate_config(cfg: RunConfig) -> list[str]:
         errs.append("ベースExcelが存在しません")
     elif not cfg.base_excel.is_file():
         errs.append("ベースExcelはファイルを指定してください（フォルダ不可）")
-    if not Path(cfg.python_exe).exists() and cfg.python_exe != "python":
-        errs.append("Python 実行ファイルが存在しません")
+    if cfg.python_exe != "python" and not Path(cfg.python_exe).exists():
+        # Allow command-style python values (python3, python3.12, etc.) when resolvable in PATH.
+        if shutil.which(cfg.python_exe) is None:
+            errs.append("Python 実行ファイルが存在しません")
     if not cfg.output_root.strip():
         errs.append("出力フォルダを指定してください")
     else:
