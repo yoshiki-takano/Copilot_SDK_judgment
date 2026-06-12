@@ -1377,18 +1377,29 @@ def main() -> None:
                                 
                                 # MERGED ファイルをダウンロード可能にする
                                 outdir_path = Path(cfg.outdir)
-                                merged_files = list(outdir_path.glob("*MERGED.xlsx"))
-                                if merged_files:
-                                    # 最新のファイルを使用
-                                    merged_file = sorted(merged_files, key=lambda p: p.stat().st_mtime)[-1]
-                                    with open(merged_file, "rb") as f:
-                                        file_data = f.read()
-                                    st.download_button(
-                                        label=f"📥 {merged_file.name} をダウンロード",
-                                        data=file_data,
-                                        file_name=merged_file.name,
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                    )
+                                if not outdir_path.exists():
+                                    st.warning(f"出力ディレクトリが見つかりません: {outdir_path}")
+                                else:
+                                    # 大文字小文字の両方を試す
+                                    merged_files = list(outdir_path.glob("*MERGED.xlsx")) + list(outdir_path.glob("*merged.xlsx"))
+                                    
+                                    if not merged_files:
+                                        # デバッグ: 出力ディレクトリ内のファイルをリスト
+                                        all_files = list(outdir_path.glob("*.xlsx"))
+                                        st.warning(f"MERGED ファイルが見つかりません（出力ディレクトリ: {outdir_path}）")
+                                        if all_files:
+                                            st.info(f"利用可能なファイル: {[f.name for f in all_files]}")
+                                    else:
+                                        # 最新のファイルを使用
+                                        merged_file = sorted(merged_files, key=lambda p: p.stat().st_mtime)[-1]
+                                        with open(merged_file, "rb") as f:
+                                            file_data = f.read()
+                                        st.download_button(
+                                            label=f"📥 {merged_file.name} をダウンロード",
+                                            data=file_data,
+                                            file_name=merged_file.name,
+                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                        )
                             else:
                                 st.error("全part成功 / merge失敗")
 
