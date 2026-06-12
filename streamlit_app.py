@@ -1262,6 +1262,11 @@ def main() -> None:
         with part_all_col:
             st.markdown("Run all parts (分割したファイルの全てを実行し結合する)", unsafe_allow_html=True)
             run_all = st.button("Run all parts ", use_container_width=True)
+        
+        # Streamlit Cloud での並列実行は不安定なため、Cloud では sequential 実行を強制
+        is_cloud = bool(st.session_state.get("_is_cloud", False))
+        if is_cloud and run_all:
+            st.info("⚠️ Streamlit Cloud では sequential 実行を使用します（スレッドセーフ）")
 
         execution_area = st.container()
 
@@ -1319,7 +1324,10 @@ def main() -> None:
                             # Keep the latest lines visible while processing many parts.
                             status.markdown("  \n".join(status_history[-30:]))
 
-                        if max_workers == 1:
+                        # Streamlit Cloud では parallel execution（ThreadPoolExecutor）が不安定なため sequential に固定
+                        force_sequential = is_cloud or max_workers == 1
+                        
+                        if force_sequential:
                             for n in part_numbers:
                                 push_status(f"part{n}: 実行中...")
                                 result = run_command(build_part_command(cfg, n), cfg.workspace)
