@@ -1064,10 +1064,6 @@ def main() -> None:
     st.title("Copilot SDK Streamlit Runner")
     if is_cloud:
         st.caption("Streamlit Cloud モード: ヘッドレス実行 + Secrets ベースの認証を推奨します")
-        st.info(
-            "Cloud運用メモ: Copilot CLI は未導入でも実行可能です。"
-            "Token file をアップロードしてください。"
-        )
     else:
         st.caption("ローカル環境でCopilot SDK/CLIを実行します")
 
@@ -1157,7 +1153,7 @@ def main() -> None:
             cli_info = status.get("cli", {})
             if cli_info.get("error"):
                 if is_cloud:
-                    st.warning(f"CLI: {cli_info['error']}（Cloud では token 認証で継続可能です）")
+                    pass
                 else:
                     st.error(f"CLI: {cli_info['error']}")
             else:
