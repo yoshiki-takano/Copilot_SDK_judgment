@@ -31,6 +31,8 @@ htmlcov/
 .env.*
 .python-version
 .streamlit/secrets.toml
+out/
+.streamlit_runtime
 
 # IDE / editor
 .vscode/
