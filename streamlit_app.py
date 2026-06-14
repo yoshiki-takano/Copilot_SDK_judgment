@@ -934,11 +934,11 @@ def validate_config(cfg: RunConfig) -> list[str]:
     if not cfg.workspace.exists():
         errs.append("workspace が存在しません")
     if str(cfg.base_excel).strip() in {"", "."}:
-        errs.append("Base Excel をアップロードしてください")
+        errs.append("分析対象の Excel をアップロードしてください")
     if not cfg.base_excel.exists():
-        errs.append("ベースExcelが存在しません")
+        errs.append("分析対象のExcelが存在しません")
     elif not cfg.base_excel.is_file():
-        errs.append("ベースExcelはファイルを指定してください（フォルダ不可）")
+        errs.append("分析対象のExcelはファイルを指定してください（フォルダ不可）")
     if cfg.python_exe != "python" and not Path(cfg.python_exe).exists():
         # Allow command-style python values (python3, python3.12, etc.) when resolvable in PATH.
         if shutil.which(cfg.python_exe) is None:
@@ -1219,28 +1219,38 @@ def main() -> None:
             )
 
         st.markdown("**分析設定**")
+        st.caption("stage 1: screening (ノイズ落とし), stage 2: extraction (stage 1の該当に対して要素抽出)")
         mode_cols = st.columns([1, 4])
         with mode_cols[0]:
-            st.selectbox("Mode", ["screening", "extraction", "both"], key="mode")
+            st.selectbox(
+                "Mode",
+                ["screening", "extraction", "both"],
+                key="mode",
+                format_func=lambda m: {
+                    "screening": "stage 1",
+                    "extraction": "stage 2",
+                    "both": "stage 1 + stage 2",
+                }.get(m, m),
+            )
 
         mode = st.session_state.mode
 
         st.markdown("**プロンプト**")
         p1, p2 = st.columns(2)
         with p1:
-            uploaded_prompt1 = st.file_uploader("Screening Prompt1 upload", type=["txt"], key="_upload_prompt1")
+            uploaded_prompt1 = st.file_uploader("Stage 1 prompt upload", type=["txt"], key="_upload_prompt1")
             if uploaded_prompt1 is not None:
                 saved = save_uploaded_file(ws_dir, uploaded_prompt1)
                 st.session_state["_uploaded_prompt1_path"] = norm(str(saved))
             if not st.session_state.get("_uploaded_prompt1_path") and mode in {"screening", "both"}:
-                st.warning("Screening Prompt1 が必要です")
+                st.warning("Stage 1 prompt が必要です")
         with p2:
-            uploaded_prompt2 = st.file_uploader("Extraction Prompt2 upload", type=["txt"], key="_upload_prompt2")
+            uploaded_prompt2 = st.file_uploader("Stage 2 prompt upload", type=["txt"], key="_upload_prompt2")
             if uploaded_prompt2 is not None:
                 saved = save_uploaded_file(ws_dir, uploaded_prompt2)
                 st.session_state["_uploaded_prompt2_path"] = norm(str(saved))
             if not st.session_state.get("_uploaded_prompt2_path") and mode in {"extraction", "both"}:
-                st.warning("Extraction Prompt2 が必要です")
+                st.warning("Stage 2 prompt が必要です")
 
         st.markdown("**モデル選択**")
         notice = st.session_state.get("_model_refresh_notice", "")
@@ -1252,15 +1262,15 @@ def main() -> None:
         model_options = st.session_state.get("_model_options", MODEL_CANDIDATES)
         if mode == "screening":
             with m2:
-                st.selectbox("Model for Screening", model_options, key="model_screening")
+                st.selectbox("Model for Stage 1", model_options, key="model_screening")
         elif mode == "extraction":
             with m2:
-                st.selectbox("Model for Extraction", model_options, key="model_extraction")
+                st.selectbox("Model for Stage 2", model_options, key="model_extraction")
         else:
             with m2:
-                st.selectbox("Model for Screening", model_options, key="model_screening")
+                st.selectbox("Model for Stage 1", model_options, key="model_screening")
             with m3:
-                st.selectbox("Model for Extraction", model_options, key="model_extraction")
+                st.selectbox("Model for Stage 2", model_options, key="model_extraction")
         with m_btn:
             st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
             if st.button("モデル再取得"):
