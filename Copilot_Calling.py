@@ -5,6 +5,7 @@ import re
 import shutil
 import sys
 import asyncio
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -235,6 +236,32 @@ def find_copilot_cli_path(explicit_path: str | None = None) -> str | None:
     return None
 
 
+def create_copilot_client(client_config: Any, client_options: dict[str, Any]) -> Any:
+    """Create a Copilot client while tolerating SDK constructor differences."""
+    if client_config is not None:
+        return CopilotClient(client_config)
+
+    if not client_options:
+        return CopilotClient()
+
+    try:
+        sig = inspect.signature(CopilotClient)
+        accepted: dict[str, Any] = {}
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if has_var_kw:
+            accepted = dict(client_options)
+        else:
+            for key, value in client_options.items():
+                if key in sig.parameters:
+                    accepted[key] = value
+        if accepted:
+            return CopilotClient(**accepted)
+        return CopilotClient()
+    except TypeError:
+        # Final fallback for older/newer SDKs with incompatible kwargs.
+        return CopilotClient()
+
+
 def parse_inputs_json(raw: str | None, file_path: str | None = None) -> list[dict[str, str]]:
     if file_path:
         try:
@@ -372,10 +399,6 @@ async def generate_content_with_retry(args: argparse.Namespace) -> int:
         client_options["github_token"] = auth_token
         client_options["use_logged_in_user"] = False
     cli_path = find_copilot_cli_path(args.cli_path)
-    if cli_path:
-        client_options["cli_path"] = cli_path
-    if args.cli_url:
-        client_options["cli_url"] = args.cli_url
 
     client_config = None
     if args.cli_url and ExternalServerConfig is not None:
@@ -387,12 +410,7 @@ async def generate_content_with_retry(args: argparse.Namespace) -> int:
             use_logged_in_user=client_options.get("use_logged_in_user"),
         )
 
-    if client_config is not None:
-        client = CopilotClient(client_config)
-    elif client_options:
-        client = CopilotClient(**client_options)
-    else:
-        client = CopilotClient()
+    client = create_copilot_client(client_config, client_options)
     try:
         await client.start()
     except RuntimeError as exc:

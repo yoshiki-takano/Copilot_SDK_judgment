@@ -34,6 +34,7 @@ htmlcov/
 out/
 .streamlit_runtime
 
+
 # IDE / editor
 .vscode/
 .idea/
@@ -43,3 +44,4 @@ out/
 Thumbs.db
 .streamlit_runtime/inputs/github_copilot_token_from_secrets.txt
 .streamlit/token_20260712.txt
+.streamlit/

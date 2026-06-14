@@ -184,9 +184,17 @@ def resolve_python_command(py_cmd: str) -> str:
     return value or "python"
 
 
+def _safe_get_streamlit_secret(key: str) -> str:
+    """Return a secret value or empty string when secrets are not configured."""
+    try:
+        return str(st.secrets.get(key, ""))
+    except Exception:
+        return ""
+
+
 def save_token_from_secrets(workspace: Path) -> str:
     for key in STREAMLIT_SECRET_TOKEN_KEYS:
-        token = extract_token_value(str(st.secrets.get(key, "")))
+        token = extract_token_value(_safe_get_streamlit_secret(key))
         if not token:
             continue
         out_dir = runtime_inputs_dir(workspace)
