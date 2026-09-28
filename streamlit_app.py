@@ -25,14 +25,12 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
 MODEL_CANDIDATES = [
-    "gpt-5.4",
-    "gpt-5-mini",
-    "gpt-5.3-codex",
-    "claude-sonnet-4.6",
-    "claude-sonnet-4.5",
-    "claude-haiku-4.5",
-    "claude-opus-4.6",
-    "claude-opus-4.5",
+    "auto",
+    "gpt-5.5",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "claude-sonnet-5",
+    "claude-opus-5.5",
 ]
 
 SUPPORTED_EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
@@ -507,6 +505,9 @@ def _extract_input_mapping_from_prompt(prompt_text: str) -> dict[int, str]:
             continue
         for m in _INPUT_PLACEHOLDER_RE.finditer(line):
             idx = int(m.group(1))
+            if idx in mapping:
+                # Keep the first definition; later prose mentioning [入力n] must not overwrite it.
+                continue
             col = line[: m.start()].strip()
             col = col.strip(":：- ")
             if col:
