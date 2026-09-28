@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -590,6 +591,87 @@ def resolve_detected_columns_to_headers(detected_columns: list[str], headers: li
     return resolved
 
 
+INPUT_SLOT_KEY = "_input_col_slot_{}"
+
+
+def detect_placeholder_defaults(mode: str, prompt1_path: str, prompt2_path: str) -> tuple[int, dict[int, str]]:
+    """Return (max [入力N] index, auto-detected column per index) across required prompts."""
+    needed = required_prompts(mode)
+    paths = []
+    if "prompt1" in needed and prompt1_path:
+        paths.append(prompt1_path)
+    if "prompt2" in needed and prompt2_path:
+        paths.append(prompt2_path)
+
+    max_idx = 0
+    defaults: dict[int, str] = {}
+    for p in paths:
+        try:
+            text = Path(p).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in _INPUT_PLACEHOLDER_RE.finditer(text):
+            max_idx = max(max_idx, int(m.group(1)))
+        for idx, col in _extract_input_mapping_from_prompt(text).items():
+            defaults.setdefault(idx, col)
+    return max_idx, defaults
+
+
+def read_headers_safe(base_excel: Path, sheet_name: str) -> list[str] | None:
+    if not base_excel.is_file():
+        return None
+    try:
+        return read_excel_headers(base_excel, sheet_name)[1]
+    except Exception:
+        return None
+
+
+def selected_slot_columns(slot_count: int) -> list[str]:
+    return [str(st.session_state.get(INPUT_SLOT_KEY.format(n)) or "") for n in range(1, slot_count + 1)]
+
+
+def _file_digest(path_text: str) -> str:
+    if not path_text or not Path(path_text).is_file():
+        return ""
+    return hashlib.sha1(Path(path_text).read_bytes()).hexdigest()
+
+
+_SHEET_LABEL_RE = re.compile(r"^[\s#*\-【\[]*作業対象シート名?\s*[】\]]?\s*[:：]?\s*(.*)$")
+_SHEET_QUOTED_RE = re.compile(r"[「『\"“](.+?)[」』\"”]")
+
+
+def detect_sheet_from_prompts(mode: str, prompt1_path: str, prompt2_path: str) -> str:
+    """Return the sheet name written as 「作業対象シート：」(same or next line) in required prompts."""
+    needed = required_prompts(mode)
+    paths = []
+    if "prompt1" in needed and prompt1_path:
+        paths.append(prompt1_path)
+    if "prompt2" in needed and prompt2_path:
+        paths.append(prompt2_path)
+
+    for p in paths:
+        try:
+            lines = Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for i, line in enumerate(lines):
+            m = _SHEET_LABEL_RE.match(line)
+            if not m:
+                continue
+            candidates = [m.group(1)] + lines[i + 1:i + 3]
+            for cand in candidates:
+                cand = cand.strip()
+                if not cand:
+                    continue
+                quoted = _SHEET_QUOTED_RE.search(cand)
+                return (quoted.group(1) if quoted else cand).strip()
+    return ""
+
+
+def prompt_sheet_signature(mode: str, prompt1_path: str, prompt2_path: str, excel_path: str) -> tuple:
+    return (mode, _file_digest(prompt1_path), _file_digest(prompt2_path), excel_path)
+
+
 def validate_excel_path(src_path: Path) -> None:
     if not src_path.exists():
         raise ValueError(f"Excel file not found: {src_path}")
@@ -959,6 +1041,9 @@ def validate_config(cfg: RunConfig) -> list[str]:
         errs.append("Prompt2 をアップロードしてください")
     if not cfg.input_columns:
         errs.append("Prompt から入力列を特定できません")
+    elif any(not col for col in cfg.input_columns):
+        unselected = [f"[入力{i}]" for i, col in enumerate(cfg.input_columns, start=1) if not col]
+        errs.append(f"入力列を選択してください: {', '.join(unselected)}")
     elif cfg.base_excel.exists() and cfg.base_excel.is_file():
         try:
             _, headers = read_excel_headers(cfg.base_excel, cfg.sheet_name)
@@ -977,7 +1062,6 @@ def get_config_from_ui() -> RunConfig:
     python_exe = resolve_python_command(st.session_state.python_exe)
     prompt1 = st.session_state.get("_uploaded_prompt1_path", "").strip()
     prompt2 = st.session_state.get("_uploaded_prompt2_path", "").strip()
-    columns = detect_input_columns_from_prompts(st.session_state.mode, prompt1, prompt2)
     # base_name and sheet_name are derived/updated via backing keys (_base_name, _sheet_name)
     base_name = st.session_state.get("_base_name", "").strip() or base_excel.stem
     sheet_name = st.session_state.get("_sheet_name", "Sheet1").strip() or "Sheet1"
@@ -987,12 +1071,14 @@ def get_config_from_ui() -> RunConfig:
     outputs_dir = norm(str(Path(output_root) / "outputs"))
     metadata_path = norm(str(Path(output_root) / ".vscode" / "copilot_run_metadata.json"))
 
-    if columns and base_excel.exists() and base_excel.is_file():
-        try:
-            _, headers = read_excel_headers(base_excel, sheet_name)
+    headers = read_headers_safe(base_excel, sheet_name)
+    slot_count, _ = detect_placeholder_defaults(st.session_state.mode, prompt1, prompt2)
+    if slot_count and headers is not None:
+        columns = selected_slot_columns(slot_count)
+    else:
+        columns = detect_input_columns_from_prompts(st.session_state.mode, prompt1, prompt2)
+        if columns and headers is not None:
             columns = resolve_detected_columns_to_headers(columns, headers)
-        except Exception:
-            pass
 
     token_file = resolve_token_file(workspace)
 
@@ -1196,6 +1282,25 @@ def main() -> None:
             except Exception as exc:
                 sheet_err = str(exc)
 
+        _mode_now = st.session_state.get("mode", "screening")
+        _p1_now = st.session_state.get("_uploaded_prompt1_path", "").strip()
+        _p2_now = st.session_state.get("_uploaded_prompt2_path", "").strip()
+        prompt_sheet = detect_sheet_from_prompts(_mode_now, _p1_now, _p2_now)
+        sheet_sig = prompt_sheet_signature(_mode_now, _p1_now, _p2_now, base_excel_path)
+        if st.session_state.get("_prompt_sheet_signature") != sheet_sig:
+            st.session_state["_prompt_sheet_signature"] = sheet_sig
+            # Apply only when prompt/Excel changes so a manual sheet choice is kept afterwards.
+            if prompt_sheet and prompt_sheet in sheet_names:
+                st.session_state["_sheet_name"] = prompt_sheet
+                st.session_state["_sheet_name_widget"] = prompt_sheet
+                _sh = prompt_sheet
+
+        if prompt_sheet and sheet_names:
+            if prompt_sheet in sheet_names:
+                st.caption(f"Prompt の作業対象シート: 「{prompt_sheet}」")
+            else:
+                st.warning(f"Prompt の作業対象シート「{prompt_sheet}」が Excel に見つからないため、自動選択しませんでした")
+
         if sheet_err:
             st.warning(sheet_err)
         elif len(sheet_names) <= 1:
@@ -1207,6 +1312,8 @@ def main() -> None:
         else:
             if _sh not in sheet_names:
                 st.session_state["_sheet_name"] = sheet_names[0]
+            if st.session_state.get("_sheet_name_widget") not in sheet_names:
+                st.session_state["_sheet_name_widget"] = st.session_state["_sheet_name"]
 
             def _sync_sheet_name():
                 st.session_state["_sheet_name"] = st.session_state["_sheet_name_widget"]
@@ -1214,7 +1321,6 @@ def main() -> None:
             st.selectbox(
                 "Sheet",
                 options=sheet_names,
-                index=sheet_names.index(st.session_state.get("_sheet_name", sheet_names[0])),
                 key="_sheet_name_widget",
                 on_change=_sync_sheet_name,
             )
@@ -1252,6 +1358,15 @@ def main() -> None:
                 st.session_state["_uploaded_prompt2_path"] = norm(str(saved))
             if not st.session_state.get("_uploaded_prompt2_path") and mode in {"extraction", "both"}:
                 st.warning("Stage 2 prompt が必要です")
+
+        # The sheet selector renders above the uploaders, so rerun once to apply a newly uploaded prompt's sheet.
+        if prompt_sheet_signature(
+            mode,
+            st.session_state.get("_uploaded_prompt1_path", "").strip(),
+            st.session_state.get("_uploaded_prompt2_path", "").strip(),
+            base_excel_path,
+        ) != st.session_state.get("_prompt_sheet_signature"):
+            st.rerun()
 
         st.markdown("**モデル選択**")
         notice = st.session_state.get("_model_refresh_notice", "")
@@ -1296,17 +1411,62 @@ def main() -> None:
                     st.session_state["_model_status"] = f"動的取得失敗: {exc}"
         st.caption(st.session_state.get("_model_status", ""))
 
-        st.markdown("**自動入力列**")
-        detected_cols = detect_input_columns_from_prompts(
-            st.session_state.mode,
-            st.session_state.get("_uploaded_prompt1_path", "").strip(),
-            st.session_state.get("_uploaded_prompt2_path", "").strip(),
-        )
-        st.caption("Input columns は Prompt の [入力n] から自動決定されます")
-        if detected_cols:
-            st.caption("Auto input columns: " + ", ".join(detected_cols))
+        st.markdown("**入力列**")
+        prompt1_path = st.session_state.get("_uploaded_prompt1_path", "").strip()
+        prompt2_path = st.session_state.get("_uploaded_prompt2_path", "").strip()
+        slot_count, slot_defaults = detect_placeholder_defaults(mode, prompt1_path, prompt2_path)
+        sheet_for_cols = st.session_state.get("_sheet_name", "Sheet1")
+        excel_for_cols = st.session_state.get("_uploaded_base_excel_path", "").strip()
+        headers = read_headers_safe(Path(excel_for_cols), sheet_for_cols) if excel_for_cols else None
+
+        if slot_count == 0:
+            detected_cols = detect_input_columns_from_prompts(mode, prompt1_path, prompt2_path)
+            st.warning("Prompt に [入力n] が見つからないため、入力列を選択できません")
+            if detected_cols:
+                st.caption("Auto input columns: " + ", ".join(detected_cols))
+        elif headers is None:
+            st.caption("分析対象Excel をアップロードすると、[入力n] ごとに列を選択できます")
+            auto_text = ", ".join(f"[入力{n}]={slot_defaults.get(n, '（未検出）')}" for n in range(1, slot_count + 1))
+            st.caption("Auto input columns: " + auto_text)
         else:
-            st.warning("Prompt から入力列を抽出できません")
+            # Uploaded files are re-saved on every rerun, so compare content rather than mtime.
+            signature = (
+                mode,
+                _file_digest(prompt1_path),
+                _file_digest(prompt2_path),
+                excel_for_cols,
+                Path(excel_for_cols).stat().st_size,
+                sheet_for_cols,
+            )
+            if st.session_state.get("_input_col_signature") != signature:
+                st.session_state["_input_col_signature"] = signature
+                resolved = resolve_detected_columns_to_headers(
+                    [slot_defaults.get(n, "") for n in range(1, slot_count + 1)], headers
+                )
+                for n, col in enumerate(resolved, start=1):
+                    key = INPUT_SLOT_KEY.format(n)
+                    if col in headers:
+                        st.session_state[key] = col
+                    else:
+                        st.session_state.pop(key, None)
+
+            st.caption("[入力n] ごとに使用するExcel列を選択してください（初期値は Prompt から自動検出）")
+            slot_cols = st.columns(min(slot_count, 3))
+            for n in range(1, slot_count + 1):
+                key = INPUT_SLOT_KEY.format(n)
+                if key in st.session_state and st.session_state[key] not in headers:
+                    st.session_state.pop(key)
+                extra = {} if key in st.session_state else {"index": None}
+                auto = slot_defaults.get(n)
+                with slot_cols[(n - 1) % len(slot_cols)]:
+                    st.selectbox(
+                        f"[入力{n}]",
+                        headers,
+                        key=key,
+                        placeholder="列を選択",
+                        help=f"Prompt から検出: {auto}" if auto else "Prompt から列名を検出できませんでした",
+                        **extra,
+                    )
 
         st.markdown("**チェック**")
         run_preflight = st.button("Preflight check")
