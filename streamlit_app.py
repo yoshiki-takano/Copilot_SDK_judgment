@@ -498,6 +498,12 @@ _INPUT_PLACEHOLDER_RE = re.compile(r"\[入力\s*(\d+)\]")
 _INPUT_BRACE_RE = re.compile(r"\{\{[^}]+\}\}")
 
 
+def read_prompt_text(path_text: str) -> str:
+    """Read a prompt file without // comment lines (same rule as Copilot_Calling.strip_prompt_comments)."""
+    text = Path(path_text).read_text(encoding="utf-8", errors="replace")
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
+
+
 def _extract_input_mapping_from_prompt(prompt_text: str) -> dict[int, str]:
     mapping: dict[int, str] = {}
     for raw_line in prompt_text.replace("\r", "\n").split("\n"):
@@ -541,7 +547,7 @@ def detect_input_columns_from_prompts(mode: str, prompt1_path: str, prompt2_path
     merged: dict[int, str] = {}
     brace_columns: list[str] = []
     for p in prompt_paths:
-        text = Path(p).read_text(encoding="utf-8", errors="replace")
+        text = read_prompt_text(p)
         for idx, col in _extract_input_mapping_from_prompt(text).items():
             merged[idx] = col
         brace_columns.extend(_extract_brace_columns_from_prompt(text))
@@ -607,7 +613,7 @@ def detect_placeholder_defaults(mode: str, prompt1_path: str, prompt2_path: str)
     defaults: dict[int, str] = {}
     for p in paths:
         try:
-            text = Path(p).read_text(encoding="utf-8", errors="replace")
+            text = read_prompt_text(p)
         except OSError:
             continue
         for m in _INPUT_PLACEHOLDER_RE.finditer(text):
@@ -651,7 +657,7 @@ def detect_sheet_from_prompts(mode: str, prompt1_path: str, prompt2_path: str) -
 
     for p in paths:
         try:
-            lines = Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = read_prompt_text(p).splitlines()
         except OSError:
             continue
         for i, line in enumerate(lines):

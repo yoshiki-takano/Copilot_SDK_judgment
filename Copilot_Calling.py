@@ -290,9 +290,14 @@ def parse_inputs_json(raw: str | None, file_path: str | None = None) -> list[dic
     return out
 
 
+def strip_prompt_comments(text: str) -> str:
+    """Remove template comment lines starting with // so they are never sent to the model."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
+
+
 def build_prompt(prompt_template: str, args: argparse.Namespace) -> str:
     inputs = parse_inputs_json(args.inputs_json, args.inputs_json_file)
-    prompt = prompt_template
+    prompt = strip_prompt_comments(prompt_template)
 
     for idx, item in enumerate(inputs, start=1):
         prompt = prompt.replace(item["placeholder"], item["value"])
