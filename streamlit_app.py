@@ -504,6 +504,9 @@ def read_prompt_text(path_text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
 
 
+_INPUT_LABEL_PREFIX_RE = re.compile(r"^【入力\s*\d+】\s*")
+
+
 def _extract_input_mapping_from_prompt(prompt_text: str) -> dict[int, str]:
     mapping: dict[int, str] = {}
     for raw_line in prompt_text.replace("\r", "\n").split("\n"):
@@ -515,7 +518,8 @@ def _extract_input_mapping_from_prompt(prompt_text: str) -> dict[int, str]:
             if idx in mapping:
                 # Keep the first definition; later prose mentioning [入力n] must not overwrite it.
                 continue
-            col = line[: m.start()].strip()
+            # "【入力1】Article Title: [入力1]" -> "Article Title"; the label is for the model only.
+            col = _INPUT_LABEL_PREFIX_RE.sub("", line[: m.start()].strip())
             col = col.strip(":：- ")
             if col:
                 mapping[idx] = col
