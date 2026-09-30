@@ -40,6 +40,8 @@ DEFAULT_MODEL = "auto"
 DEFAULT_INPUT_COLUMNS = ["請求項（英語）", "タイトル（英語）"]
 DEFAULT_SHEET = "savedrecs"
 SAVE_EVERY_ROWS = 10
+DEFAULT_ROW_RETRY_PASSES = 2
+DEFAULT_ROW_RETRY_DELAY_SEC = 5.0
 EXCEL_CELL_MAX_CHARS = 32767
 METADATA_CHUNK_CHARS = 30000
 METADATA_SHEET = "実行条件"
@@ -76,6 +78,10 @@ def parse_args(description: str) -> argparse.Namespace:
     p.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="1リクエストあたりの最大試行回数")
     p.add_argument("--request-timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT_SEC,
                    help="1リクエストあたりのタイムアウト秒")
+    p.add_argument("--row-retry-passes", type=int, default=DEFAULT_ROW_RETRY_PASSES,
+                   help="エラーになった行だけを対象に、全行処理後にもう一度やり直す回数")
+    p.add_argument("--row-retry-delay", type=float, default=DEFAULT_ROW_RETRY_DELAY_SEC,
+                   help="やり直しパスの前に空ける秒数")
     p.add_argument("--cli-path", type=str, help="Copilot CLI の実行ファイル（省略時はSDK同梱版）")
     p.add_argument("--cli-url", type=str, help="起動済み Copilot CLI サーバーのURL")
     p.add_argument("--merge-after", dest="merge_after", action="store_true",
@@ -479,6 +485,66 @@ def _save(wb, path: str, final: bool = False) -> bool:
         return False
 
 
+async def _process_row(
+    runner: CopilotRunner,
+    ws,
+    r: int,
+    values: list[str],
+    template1: str,
+    template2: str,
+    args: argparse.Namespace,
+    run_stage1: bool,
+    run_stage2: bool,
+    cols: tuple[int, int, int, int],
+    stage2_cols: "DynamicColumns | None",
+) -> bool:
+    """Process one row in place. Returns True if stage1 or stage2 failed for this row."""
+    s1_judge, s1_reason, s1_raw, s2_status = cols
+    preview = next((v for v in reversed(values[:2]) if v.strip()), "")[:50]
+    print(f"\n--- 処理中の行: {r} | 入力プレビュー: {preview}... ---", flush=True)
+
+    relevant = True
+    row_error = False
+    stage1_failed = False
+    if run_stage1:
+        res1 = await runner.generate_json(build_prompt(template1, values), args.model_stage1, validate_screening)
+        if res1.ok:
+            relevant, reason = interpret_screening(res1.data)
+            ws.cell(row=r, column=s1_judge, value=str(relevant))
+            ws.cell(row=r, column=s1_reason, value=excel_safe(reason))
+            ws.cell(row=r, column=s1_raw).value = None  # clear a stale error from a previous retry pass
+            print(f"[SCREENING] row={r} result={relevant}")
+        else:
+            row_error = True
+            relevant = False
+            stage1_failed = True
+            ws.cell(row=r, column=s1_judge, value="ERROR")
+            ws.cell(row=r, column=s1_reason, value=excel_safe(res1.error))
+            ws.cell(row=r, column=s1_raw, value=excel_safe(res1.raw_text))
+            print(f"[SCREENING ERROR] row={r} {res1.error}", file=sys.stderr)
+
+    if run_stage2 and stage2_cols is not None:
+        if not relevant:
+            status = "N/A (Stage1 Error)" if stage1_failed else "N/A (Skipped)"
+            ws.cell(row=r, column=s2_status, value=status)
+        else:
+            res2 = await runner.generate_json(build_prompt(template2, values), args.model_stage2, validate_extraction)
+            if res2.ok:
+                stage2_cols.write(r, flatten_record(unwrap_extraction(res2.data) or {}))
+                ws.cell(row=r, column=s2_status, value="OK")
+                raw_col = stage2_cols.columns.get("2__raw_text")
+                if raw_col is not None:
+                    ws.cell(row=r, column=raw_col).value = None  # clear a stale error from a previous retry pass
+                print(f"[EXTRACTION] row={r} OK")
+            else:
+                row_error = True
+                ws.cell(row=r, column=s2_status, value=excel_safe(f"ERROR: {res2.error}"))
+                stage2_cols.write(r, {"_raw_text": res2.raw_text})
+                print(f"[EXTRACTION ERROR] row={r} {res2.error}", file=sys.stderr)
+
+    return row_error
+
+
 async def _process(job: JobConfig, args: argparse.Namespace, run_stage1: bool, run_stage2: bool) -> int:
     print(f"[PATH] 入力: {job.input_path}")
     print(f"[SHEET] {job.sheetname}")
@@ -536,8 +602,10 @@ async def _process(job: JobConfig, args: argparse.Namespace, run_stage1: bool, r
     total_rows = ws.max_row - 1 if ws.max_row > 1 else 0
     print(f"[INPUT ROWS] total={total_rows} process={len(rows)} skipped_all_empty={total_rows - len(rows)}")
 
-    row_errors = 0
-    progress = tqdm(total=len(rows))
+    row_values = dict(rows)
+    pending = [r for r, _ in rows]
+    total_passes = 1 + max(0, args.row_retry_passes)
+    cols = (s1_judge, s1_reason, s1_raw, s2_status)
     try:
         async with CopilotRunner(
             token=job.token,
@@ -546,60 +614,43 @@ async def _process(job: JobConfig, args: argparse.Namespace, run_stage1: bool, r
             request_timeout=args.request_timeout,
             max_retries=args.max_retries,
         ) as runner:
-            for done, (r, values) in enumerate(rows, start=1):
-                preview = next((v for v in reversed(values[:2]) if v.strip()), "")[:50]
-                print(f"\n--- 処理中の行: {r} | 入力プレビュー: {preview}... ---", flush=True)
-
-                relevant = True
-                stage1_failed = False
-                if run_stage1:
-                    res1 = await runner.generate_json(
-                        build_prompt(template1, values), args.model_stage1, validate_screening
+            for pass_no in range(1, total_passes + 1):
+                if not pending:
+                    break
+                if pass_no > 1:
+                    print(
+                        f"\n[RETRY] エラーになった {len(pending)} 行を再試行します "
+                        f"（{pass_no - 1}/{args.row_retry_passes} 回目）: {pending}",
+                        file=sys.stderr,
                     )
-                    if res1.ok:
-                        relevant, reason = interpret_screening(res1.data)
-                        ws.cell(row=r, column=s1_judge, value=str(relevant))
-                        ws.cell(row=r, column=s1_reason, value=excel_safe(reason))
-                        print(f"[SCREENING] row={r} result={relevant}")
-                    else:
-                        row_errors += 1
-                        relevant = False
-                        stage1_failed = True
-                        ws.cell(row=r, column=s1_judge, value="ERROR")
-                        ws.cell(row=r, column=s1_reason, value=excel_safe(res1.error))
-                        ws.cell(row=r, column=s1_raw, value=excel_safe(res1.raw_text))
-                        print(f"[SCREENING ERROR] row={r} {res1.error}", file=sys.stderr)
+                    if args.row_retry_delay > 0:
+                        await asyncio.sleep(args.row_retry_delay)
 
-                if run_stage2 and stage2_cols is not None:
-                    if not relevant:
-                        status = "N/A (Stage1 Error)" if stage1_failed else "N/A (Skipped)"
-                        ws.cell(row=r, column=s2_status, value=status)
-                    else:
-                        res2 = await runner.generate_json(
-                            build_prompt(template2, values), args.model_stage2, validate_extraction
+                still_failing: list[int] = []
+                progress = tqdm(total=len(pending), desc="rows" if pass_no == 1 else f"retry {pass_no - 1}")
+                try:
+                    for done, r in enumerate(pending, start=1):
+                        had_error = await _process_row(
+                            runner, ws, r, row_values[r], template1, template2, args,
+                            run_stage1, run_stage2, cols, stage2_cols,
                         )
-                        if res2.ok:
-                            stage2_cols.write(r, flatten_record(unwrap_extraction(res2.data) or {}))
-                            ws.cell(row=r, column=s2_status, value="OK")
-                            print(f"[EXTRACTION] row={r} OK")
-                        else:
-                            row_errors += 1
-                            ws.cell(row=r, column=s2_status, value=excel_safe(f"ERROR: {res2.error}"))
-                            stage2_cols.write(r, {"_raw_text": res2.raw_text})
-                            print(f"[EXTRACTION ERROR] row={r} {res2.error}", file=sys.stderr)
-
-                progress.update(1)
-                if done % SAVE_EVERY_ROWS == 0:
+                        if had_error:
+                            still_failing.append(r)
+                        progress.update(1)
+                        if done % SAVE_EVERY_ROWS == 0:
+                            _save(wb, output_path)
+                finally:
+                    progress.close()
                     _save(wb, output_path)
+                pending = still_failing
     finally:
-        progress.close()
         saved = _save(wb, output_path, final=True)
         wb.close()
 
     if not saved:
         return EXIT_FATAL
-    if row_errors:
-        print(f"[DONE WITH ERRORS] {row_errors} 行でエラーが発生しました: {output_path}", file=sys.stderr)
+    if pending:
+        print(f"[DONE WITH ERRORS] {len(pending)} 行でエラーが発生しました: {output_path}", file=sys.stderr)
         return EXIT_ROW_ERRORS
     print(f"[DONE] {output_path}")
     return EXIT_OK
