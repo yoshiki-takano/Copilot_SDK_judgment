@@ -4,9 +4,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -49,6 +51,7 @@ SUPPORTED_EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAX_SPLIT_PARTS = 50
 MAX_WORKERS = 10
+SESSION_DIR_MAX_AGE_SEC = 24 * 60 * 60
 
 
 @dataclass
@@ -95,6 +98,31 @@ def session_runtime_dir() -> Path:
     d = Path(tempfile.gettempdir()) / "copilot_sdk_runner" / st.session_state["_session_id"]
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _latest_mtime(path: Path) -> float:
+    latest = path.stat().st_mtime
+    for child in path.rglob("*"):
+        try:
+            latest = max(latest, child.stat().st_mtime)
+        except OSError:
+            continue
+    return latest
+
+
+def cleanup_stale_session_dirs() -> None:
+    """Delete other sessions' folders whose newest file is older than SESSION_DIR_MAX_AGE_SEC."""
+    root = Path(tempfile.gettempdir()) / "copilot_sdk_runner"
+    if not root.is_dir():
+        return
+    own = st.session_state.get("_session_id", "")
+    cutoff = time.time() - SESSION_DIR_MAX_AGE_SEC
+    for d in root.iterdir():
+        try:
+            if d.name != own and d.is_dir() and _latest_mtime(d) < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def default_output_root(workspace: Path, is_cloud: bool) -> str:
@@ -741,6 +769,7 @@ def prepare_split(cfg: RunConfig, split_parts: int) -> RunConfig:
 def init_state() -> None:
     if "_session_id" not in st.session_state:
         st.session_state["_session_id"] = uuid.uuid4().hex
+        cleanup_stale_session_dirs()
     is_cloud = is_streamlit_cloud()
     output_root = default_output_root(APP_DIR, is_cloud)
     defaults = {
