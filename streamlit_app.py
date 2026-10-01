@@ -649,6 +649,8 @@ def marker_path(stdout: str, marker: str) -> Path | None:
 
 def validate_config(cfg: RunConfig) -> list[str]:
     errs: list[str] = []
+    if not cfg.token:
+        errs.append("Copilotトークンが確認できません。Token file upload または Streamlit Secrets でトークンを設定してください")
     if cfg.base_excel is None:
         errs.append("分析対象の Excel をアップロードしてください")
     elif not cfg.base_excel.is_file():
@@ -884,7 +886,8 @@ def render_workspace_tab(ws_dir: Path, is_cloud: bool) -> None:
     elif auth_label == "token (uploaded file)":
         st.success("Copilot token: アップロードされたファイルから読み込み済み（ディスクには保存しません）")
     else:
-        st.caption("Token未設定時は CLI ログインユーザーを利用します（Cloudでは非推奨）")
+        st.warning("Copilotトークンが未設定です。設定しない限り実行できません")
+
 
     st.markdown("**Copilot SDK・CLI・認証状態確認**")
     if st.button("統合状態を確認"):
