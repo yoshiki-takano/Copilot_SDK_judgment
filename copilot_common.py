@@ -22,6 +22,16 @@ CLIENT_START_TIMEOUT_SEC = 120
 CLIENT_STOP_TIMEOUT_SEC = 30
 MAX_BACKOFF_SEC = 30
 
+# Appended to the system message so the prompt file's own language instructions take precedence.
+LANGUAGE_POLICY = (
+    "Response language policy:\n"
+    "- If the user's prompt specifies an output language, follow it.\n"
+    "- Otherwise, write all free-text values (reasons, summaries, explanations, etc.) in Japanese.\n"
+    "- Text quoted or extracted from the input as evidence/citations must be copied verbatim in its "
+    "original language. Never translate, paraphrase, or summarize it.\n"
+    "- Do not translate JSON keys or fixed values defined by the prompt (e.g. true/false, enumerations)."
+)
+
 _TOKEN_KEY_PATTERN = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(.+)$")
 
 
@@ -327,6 +337,7 @@ class CopilotRunner:
             on_permission_request=_reject_all_permissions,
             model=normalize_model(model),
             reasoning_effort=self.reasoning_effort,
+            system_message={"mode": "append", "content": LANGUAGE_POLICY},
             available_tools=[],
             skip_custom_instructions=True,
             enable_config_discovery=False,
